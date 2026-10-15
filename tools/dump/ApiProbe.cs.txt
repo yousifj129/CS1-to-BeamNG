@@ -1,0 +1,59 @@
+// Throwaway developer utility (Part 1 build verification) -- UI/runtime pass.
+// Must run INSIDE Cities: Skylines (or any Unity host) because Resources.FindObjectsOfTypeAll
+// only sees live objects.  This file is compiled together with the exporter by the in-game
+// compiler ONLY when placed in the LocalMods folder; it is kept here for documentation.
+//
+// It prints: every loaded UITextureAtlas with its sprite names, and every loaded UIFont.
+
+using System.Text;
+using ColossalFramework.UI;
+using UnityEngine;
+
+namespace CS1ToBeamNGExporter
+{
+    public static class ApiProbe
+    {
+        public static void DumpAtlases()
+        {
+            StringBuilder sb = new StringBuilder();
+            UITextureAtlas[] atlases = Resources.FindObjectsOfTypeAll<UITextureAtlas>();
+            sb.AppendLine("=== " + (atlases == null ? 0 : atlases.Length) + " UITextureAtlas loaded ===");
+
+            if (atlases != null)
+            {
+                for (int i = 0; i < atlases.Length; i++)
+                {
+                    UITextureAtlas atlas = atlases[i];
+                    if (atlas == null)
+                    {
+                        continue;
+                    }
+
+                    sb.AppendLine("atlas '" + atlas.name + "' sprites=" + (atlas.spriteNames == null ? 0 : atlas.spriteNames.Length));
+                    if (atlas.spriteNames != null)
+                    {
+                        for (int s = 0; s < atlas.spriteNames.Length; s++)
+                        {
+                            sb.AppendLine("   - " + atlas.spriteNames[s]);
+                        }
+                    }
+                }
+            }
+
+            UIFont[] fonts = Resources.FindObjectsOfTypeAll<UIFont>();
+            sb.AppendLine("=== " + (fonts == null ? 0 : fonts.Length) + " UIFont loaded ===");
+            if (fonts != null)
+            {
+                for (int i = 0; i < fonts.Length; i++)
+                {
+                    if (fonts[i] != null)
+                    {
+                        sb.AppendLine("font '" + fonts[i].name + "' size=" + fonts[i].size + " dynamic=" + fonts[i].isDynamic);
+                    }
+                }
+            }
+
+            Debug.Log(sb.ToString());
+        }
+    }
+}

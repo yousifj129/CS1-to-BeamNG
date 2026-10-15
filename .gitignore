@@ -1,0 +1,31 @@
+# Build outputs and generated artifacts.
+#
+# The converted level is ~200 MB of generated terrain: a single .ter for this city is 192 MB.  None
+# of it belongs in version control -- it is rebuilt from the export by tools/beamng_convert.py.
+dist/
+build/
+
+# BeamNG writes this beside a level it opens; it shadows the mod and is not source.
+**/main.decals.json
+
+# Analysis scratch space: throwaway probe scripts and their captured output.
+_pr_analysis/
+_terrain_probe/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# C# / Visual Studio
+bin/
+obj/
+*.user
+.vs/
+
+# Editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
