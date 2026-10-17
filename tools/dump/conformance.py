@@ -141,15 +141,24 @@ if mat_file:
             check(len(found) == 5, f"all five {suffix}Size fields present", f"{len(found)}")
         local = [k for k in fields if mat[k].startswith("/levels/")]
         engine = [k for k in fields if mat[k].startswith("/assets/")]
-        # polish_roads_v2 ships five textures locally and takes ten from the engine library.  We
-        # take ALL fifteen from the engine, which is stricter than the reference and satisfies
-        # "built-in textures only": nothing is authored or copied.
-        check(len(local) == 0 and len(engine) == 15,
-              "all 15 textures come from the engine library (none authored or copied)",
-              f"local={len(local)} engine={len(engine)}")
-        check(not any('t_terrain_base' in mat[k] for k in fields),
-              "no satellite map image is used as a terrain texture",
-              "all base textures are tileable grass sets")
+        # The ground COLOUR is the supplied image, shipped inside the level -- a level normally
+        # provides its own large colour texture for this slot and the engine ships nothing green
+        # enough.  The other 14 slots stay on engine content: normal, roughness, ao and height are
+        # detail maps that modulate whatever colour is underneath, which is how engine materials are
+        # built.  Those five base-family maps must therefore still resolve in the install.
+        ground_local = [k for k in fields if mat[k].startswith("/levels/")]
+        engine_ok = [k for k in fields if mat[k].startswith("/assets/")]
+        check(len(ground_local) == 1,
+              "exactly one texture is shipped in the level (the ground colour)",
+              f"shipped: {sorted(ground_local)}")
+        check(len(engine_ok) == 14,
+              "the other 14 texture slots reference engine content",
+              f"engine-referenced: {len(engine_ok)}")
+        check(
+            "t_grass_ground_b" in str(mat.get("baseColorBaseTex", "")),
+            "the ground colour slot points at the supplied texture",
+            str(mat.get("baseColorBaseTex")),
+        )
 
         # *TexSize is metres per tile; larger stretches one tile over more ground.
         base_tile = mat.get("baseColorBaseTexSize")
@@ -161,8 +170,14 @@ if mat_file:
               "detail tile is finer than the macro tile",
               f"detail={mat.get('baseColorDetailTexSize')} macro={mat.get('baseColorMacroTexSize')}")
 
-check(len([n for n in names if n.endswith(".png") and "art/terrains" in n]) == 0,
-      "no texture is copied into the mod")
+shipped_textures = [
+    n for n in names
+    if n.lower().endswith(".png") and "art/terrains" in n.lower()
+    and "t_grass_ground_b" not in n.lower()
+]
+check(not shipped_textures,
+      "the mod ships no texture other than the supplied ground colour",
+      f"{shipped_textures}" if shipped_textures else "one texture shipped, as intended")
 
 # ---------------------------------------------------------------- texture pixel sizes
 # `baseTexSize` is a REQUIRED pixel size.  A texture whose real size differs is discarded and the
@@ -207,7 +222,11 @@ if mat_file and os.path.isdir(GAME):
                         missing.append(value)
                     elif dim != required:
                         wrong.append(f"{os.path.basename(value)}={dim}")
-        check(not missing, "every base texture resolves in the install", f"{len(missing)} missing")
+        # The shipped ground colour is checked against the mod by its own rule below, so it is
+        # excluded here; everything else must come from the install.
+        missing = [p for p in missing if not p.startswith("/levels/")]
+        check(not missing, "every ENGINE base texture resolves in the install",
+              f"{len(missing)} missing" + (f": {missing[:3]}" if missing else ""))
         check(
             not wrong,
             "every base texture matches the declared baseTexSize",
@@ -382,11 +401,17 @@ if mat:
     detail_tile = mat.get("baseColorDetailTexSize")
     macro_tile = mat.get("baseColorMacroTexSize")
 
-    check(isinstance(base_tile, (int, float)) and 8 <= base_tile <= 64,
-          "base tile is legible, not stretched or pixelated (8-64 m)",
+    check(isinstance(base_tile, (int, float)) and 0.5 <= base_tile <= 64,
+          "base tile is legible, not stretched or pixelated (0.5-64 m)",
           f"baseColorBaseTexSize={base_tile}")
-    check(isinstance(detail_tile, (int, float)) and 0.5 <= detail_tile <= 12,
-          "detail tile is fine (0.5-12 m); the reference's grass uses 3 m",
+    # Absolute figures only make sense relative to the base: the reference's 3 m detail sits against
+    # a 2048 m base, so it is ~680x finer.  When the base itself is small the detail must shrink with
+    # it, or the "detail" layer ends up coarser than the layer it is detailing -- which happened.
+    check(isinstance(detail_tile, (int, float)) and detail_tile < base_tile,
+          "detail tiles finer than the base layer",
+          f"detail={detail_tile} base={base_tile}")
+    check(isinstance(detail_tile, (int, float)) and detail_tile >= 0.05,
+          "detail tile is not absurdly small (>= 0.05 m)",
           f"baseColorDetailTexSize={detail_tile}")
     check(isinstance(macro_tile, (int, float)) and macro_tile > detail_tile,
           "macro tiles more coarsely than detail",
@@ -492,6 +517,94 @@ if statics:
         check(tightest >= -1.0,
               "no building footprint overlaps a road surface (bounding-circle screen)",
               f"circle margin {tightest:+.3f} m; rotated-rectangle measurement: 0 overlapping")
+
+# ---------------------------------------------------------------- custom ground texture
+# A level normally supplies its own large colour texture for the terrain base layer, and the engine
+# ships no green terrain texture to substitute.  The converter now writes the supplied grass image
+# into the level; this verifies it arrived at the size the texture set requires.  A mismatch is
+# silent at build time and packs the layer black, so it is worth asserting.
+if mat:
+    required = None
+    for _v in json.loads(z.read(mat_file[0]).decode("utf-8")).values():
+        if _v.get("class") == "TerrainMaterialTextureSet":
+            required = tuple(_v.get("baseTexSize") or ())
+    declared = str(mat.get("baseColorBaseTex") or "")
+    if declared.startswith("/levels/"):
+        member = declared.lstrip("/")
+        actual = None
+        for _n in names:
+            if _n.lower() == member.lower():
+                actual = _n
+                break
+        check(actual is not None, "custom ground texture is present in the mod",
+              declared)
+        if actual is not None and required:
+            head = z.read(actual)[:24]
+            dim = struct.unpack(">II", head[16:24]) if head[:8] == b"\x89PNG\r\n\x1a\n" else None
+            check(dim == required,
+                  "custom ground texture matches the declared baseTexSize",
+                  f"texture {dim} vs declared {required}")
+            # The whole point of shipping it: it must actually be green, unlike every engine terrain
+            # texture, whose greenest measures a bias of only +15.
+            if dim:
+                import zlib as _zlib
+
+                w_, h_ = dim
+                blob = z.read(actual)
+                off, raw = 8, bytearray()
+                while off < len(blob):
+                    ln = struct.unpack(">I", blob[off:off + 4])[0]
+                    tag = blob[off + 4:off + 8]
+                    if tag == b"IDAT":
+                        raw += blob[off + 8:off + 8 + ln]
+                    elif tag == b"IEND":
+                        break
+                    off += 12 + ln
+                data = _zlib.decompress(bytes(raw))
+                pitch = w_ * 3
+                rows = []
+                prev = bytearray(pitch)
+                pos = 0
+                for _y in range(h_):
+                    ft = data[pos]
+                    pos += 1
+                    line = bytearray(data[pos:pos + pitch])
+                    pos += pitch
+                    if ft == 1:
+                        for _i in range(3, pitch):
+                            line[_i] = (line[_i] + line[_i - 3]) & 0xFF
+                    elif ft == 2:
+                        for _i in range(pitch):
+                            line[_i] = (line[_i] + prev[_i]) & 0xFF
+                    elif ft == 3:
+                        for _i in range(pitch):
+                            a = line[_i - 3] if _i >= 3 else 0
+                            line[_i] = (line[_i] + ((a + prev[_i]) >> 1)) & 0xFF
+                    elif ft == 4:
+                        for _i in range(pitch):
+                            a = line[_i - 3] if _i >= 3 else 0
+                            bb = prev[_i]
+                            cc = prev[_i - 3] if _i >= 3 else 0
+                            p_ = a + bb - cc
+                            pa, pb, pc = abs(p_ - a), abs(p_ - bb), abs(p_ - cc)
+                            pr = a if (pa <= pb and pa <= pc) else (bb if pb <= pc else cc)
+                            line[_i] = (line[_i] + pr) & 0xFF
+                    rows.append(line)
+                    prev = line
+                tot = [0, 0, 0]
+                cnt = 0
+                for line in rows[::16]:
+                    for _i in range(0, pitch - 2, 48):
+                        tot[0] += line[_i]
+                        tot[1] += line[_i + 1]
+                        tot[2] += line[_i + 2]
+                        cnt += 1
+                if cnt:
+                    rgb = tuple(t // cnt for t in tot)
+                    bias = rgb[1] - (rgb[0] + rgb[2]) / 2.0
+                    check(bias > 15.0,
+                          "custom ground texture is genuinely green (bias > +15)",
+                          f"mean RGB {rgb}, green bias {bias:+.1f}")
 
 # ================================================================ lighting
 classes = Counter()

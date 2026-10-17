@@ -1825,6 +1825,111 @@ assumption since it was written.
 
 ---
 
+---
+
+## 22. Green ground, at last: the level ships its own colour texture
+
+Every previous attempt failed for a structural reason, not a tuning one. A level's terrain **base**
+layer is meant to be a large colour texture that the level itself ships -- polish_roads_v2's is a
+2048 m satellite photograph of its own map. The engine's own terrain textures measure near-neutral
+grey; the greenest found anywhere in the install has a green bias of only **+15**, and no material
+field can tint a terrain material (there is no `baseColorFactor` on `TerrainMaterial` -- it appears on
+none of the 191 across the install).
+
+So the ground could not be made green from built-in content at all. It needed an image.
+
+### The supplied texture
+
+`textures/grass.jpg`, 893x894 JPEG. Measured **mean RGB (89, 99, 45), green bias +31.7** -- twice as
+green as anything the engine ships, and it is real grass rather than gravel speckled with green.
+
+The converter now writes it into the level as
+`levels/<level>/art/terrains/t_grass_ground_b.png`:
+
+* converted to PNG, the format every terrain texture reference here uses;
+* centre-cropped to a square so it does not stretch, then resized to **1024x1024** and saved as PNG.
+  The power of two matters: `baseTexSize` declares a *required* size and the engine discards anything
+  that does not match, packing the layer black -- a rule that already cost several rounds.
+
+### Only the colour slot changed
+
+| slot | source |
+|---|---|
+| **base colour** | **the supplied `grass.jpg`** |
+| base normal / roughness / ao / height | engine `forest/t_forest_ground_02` |
+| detail | engine `grass/t_grass_01`, 3 m |
+| macro | engine `grass/macro_grass`, 40 m |
+
+The engine maps stay on the non-colour slots deliberately: normal, roughness, ao and height are detail
+maps that modulate whatever colour is underneath, which is exactly how the engine's own materials are
+built. Keeping them means the ground still has proper relief and lighting response rather than being
+a flat photograph.
+
+Base tile is **32 m** -- 1024 px over 32 m is about 3 cm per texel, fine enough not to pixelate and
+coarse enough not to repeat visibly across a 32 km world.
+
+`convert_custom_terrain_texture` returns None rather than raising when the source is missing, so a
+level still builds without it and the reference material is used instead.
+
+### Rules that changed
+
+Three rules had been written when the goal was strictly engine-only content, and they failed against
+the supplied texture. Rather than loosening them into meaning nothing, each now states the real
+requirement:
+
+| rule | before | now |
+|---|---|---|
+| texture source split | "all 15 from the engine library" | exactly **one shipped** (the ground colour), **14 engine** |
+| copied textures | "no texture is copied into the mod" | no texture shipped *other than* the ground colour |
+| install resolution | "every base texture resolves in the install" | every **engine** base texture resolves; the shipped one is checked against the mod |
+
+Plus three new rules for the shipped texture: that it is present, that its size **matches the declared
+`baseTexSize`**, and that it is **genuinely green** (bias > +15), since being green is the entire
+reason it exists.
+
+### Still to do
+
+Normal, roughness, ao and height maps for the supplied texture. Its current maps come from a different
+image, so the relief does not correspond to the visible grass; it reads acceptably but is not correct.
+
+---
+
+---
+
+## 23. Grass tiling reduced 30x, and the family ordering it broke
+
+Base tile reduced from 32 m to **1.07 m**, a factor of 30, on request. At 1024 px that is about
+**1 mm per texel**, so the texture's own pixels are far below the visible threshold and the blades
+read at their intended size rather than being magnified.
+
+The change broke a relationship that had to be fixed with it: the detail layer was tiled at 3 m --
+**coarser than the 1.07 m base it exists to detail**, which is backwards. All three families were
+scaled proportionally:
+
+| family | before | now | texel |
+|---|---|---|---|
+| base | 32 m | **1.07 m** | 1.04 mm |
+| detail | 3 m | **0.35 m** | 0.34 mm |
+| macro | 40 m | **3 m** | 2.93 mm |
+
+`detail < base < macro` now holds, which is the ordering that matters.
+
+### A conformance rule was wrong again, for an instructive reason
+
+The detail rule asserted an **absolute** range of 0.5-12 m, justified by "the reference's grass uses
+3 m". That figure is only meaningful relative to the reference's own base, which is 2048 m -- its
+detail is about **680x finer** than its base. An absolute floor becomes meaningless the moment the
+base changes scale: against a 1.07 m base, a 3 m "detail" layer is simply wrong.
+
+The rule is now **relative** -- the detail must tile finer than the base, with only a sanity floor
+(0.05 m) beneath it.
+
+This is the third rule in this project found to encode an assumption copied from the reference that
+did not transfer, after the `base >= 64 m` rule and the "all 15 textures from the engine" rule.
+**A value taken from a working example is only valid together with the conditions that made it work.**
+
+---
+
 ## 8. What the rewrite must do, concretely
 
 1. **Terrain material: use built-in materials and built-in textures.** Reference

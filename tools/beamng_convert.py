@@ -1437,35 +1437,35 @@ CS1_TERRAIN_MATERIAL = {
     "normalMacroStrength": [0.5, 0.5],
     "roughnessMacroStrength": [0.2, 0.4],
     "baseColorBaseTex": "/assets/materials/terrain/forest/t_forest_ground_02/t_forest_ground_02_b.png",
-    "baseColorBaseTexSize": 16,
+    "baseColorBaseTexSize": 1.07,
     "normalBaseTex": "/assets/materials/terrain/forest/t_forest_ground_02/t_forest_ground_02_nm.png",
-    "normalBaseTexSize": 16,
+    "normalBaseTexSize": 1.07,
     "roughnessBaseTex": "/assets/materials/terrain/forest/t_forest_ground_02/t_forest_ground_02_r.png",
-    "roughnessBaseTexSize": 16,
+    "roughnessBaseTexSize": 1.07,
     "aoBaseTex": "/assets/materials/terrain/forest/t_forest_ground_02/t_forest_ground_02_ao.png",
-    "aoBaseTexSize": 16,
+    "aoBaseTexSize": 1.07,
     "heightBaseTex": "/assets/materials/terrain/forest/t_forest_ground_02/t_forest_ground_02_h.png",
-    "heightBaseTexSize": 16,
+    "heightBaseTexSize": 1.07,
     "baseColorMacroTex": "/assets/materials/terrain/grass/macro_grass/t_macro_grass_b.png",
-    "baseColorMacroTexSize": 40,
+    "baseColorMacroTexSize": 3,
     "normalMacroTex": "/assets/materials/terrain/grass/macro_grass/t_macro_grass_nm.png",
-    "normalMacroTexSize": 40,
+    "normalMacroTexSize": 3,
     "roughnessMacroTex": "/assets/materials/terrain/grass/macro_grass/t_macro_grass_r.png",
-    "roughnessMacroTexSize": 40,
+    "roughnessMacroTexSize": 3,
     "aoMacroTex": "/assets/materials/terrain/grass/macro_grass/t_macro_grass_ao.png",
-    "aoMacroTexSize": 40,
+    "aoMacroTexSize": 3,
     "heightMacroTex": "/assets/materials/terrain/grass/macro_grass/t_macro_grass_h.png",
-    "heightMacroTexSize": 40,
+    "heightMacroTexSize": 3,
     "baseColorDetailTex": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_b.png",
-    "baseColorDetailTexSize": 3,
+    "baseColorDetailTexSize": 0.35,
     "normalDetailTex": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_nm.png",
-    "normalDetailTexSize": 3,
+    "normalDetailTexSize": 0.35,
     "roughnessDetailTex": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_r.png",
-    "roughnessDetailTexSize": 3,
+    "roughnessDetailTexSize": 0.35,
     "aoDetailTex": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_ao.png",
-    "aoDetailTexSize": 3,
+    "aoDetailTexSize": 0.35,
     "heightDetailTex": "/assets/materials/terrain/grass/t_grass_01/t_grass_01_h.png",
-    "heightDetailTexSize": 3,
+    "heightDetailTexSize": 0.35,
 }
 
 
@@ -2189,6 +2189,58 @@ def build_ground_models() -> Dict[str, Any]:
 
 
 # ==========================================================================================
+#  Custom terrain colour texture
+# ==========================================================================================
+#
+# A level normally ships a large colour texture for its terrain base layer -- polish_roads_v2's is a
+# 2048 m satellite photograph of its own map.  A converter has no such image, and every terrain
+# texture the engine ships measures near-neutral grey (the greenest has a green bias of +15), so the
+# ground could not be made green from built-in content.  This uses a supplied grass image instead.
+#
+# `custom_terrain_texture` is written to `levels/<level>/art/terrains/` and referenced from the
+# material's `baseColorBaseTex`.  Normal, roughness, ao and height stay on the engine's set: those
+# modulate whatever colour sits underneath, which is how the engine's own materials are built.
+CUSTOM_TERRAIN_TEXTURE_NAME = "t_grass_ground_b.png"
+CUSTOM_TERRAIN_TEXTURE_SIZE = 1024
+CUSTOM_TERRAIN_TEXTURE_SOURCE = "textures/grass.jpg"
+
+
+def convert_custom_terrain_texture(source_path: str, destination_path: str, size: int) -> Optional[str]:
+    """
+    Convert a supplied ground image into the terrain colour texture the level ships.
+
+    Squared and resized to a power of two because `baseTexSize` declares a REQUIRED size and the
+    engine discards any texture that does not match it -- a rule that cost several rounds here.
+    Returns the destination path, or None if the source is missing or unreadable, so a level can
+    still be built without it.
+    """
+    if not os.path.isfile(source_path):
+        return None
+
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    try:
+        with Image.open(source_path) as image:
+            image = image.convert("RGB")
+            # Centre-crop to a square so the texture does not stretch.
+            width, height = image.size
+            edge = min(width, height)
+            left = (width - edge) // 2
+            top = (height - edge) // 2
+            image = image.crop((left, top, left + edge, top + edge))
+            image = image.resize((size, size), Image.LANCZOS)
+
+            os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+            image.save(destination_path, format="PNG")
+        return destination_path
+    except Exception:
+        return None
+
+
+# ==========================================================================================
 #  Level builder
 # ==========================================================================================
 
@@ -2389,6 +2441,33 @@ class BeamNGLevelBuilder:
 
         terrain_dir = os.path.join(self.level_root, "art", "terrains")
         os.makedirs(terrain_dir, exist_ok=True)
+
+        # Ship the supplied ground colour texture in the level, and point the base colour slot at it.
+        # Only that slot changes; the normal, roughness, ao and height families stay on the engine
+        # set, which is how the engine's own materials are built.
+        source = os.path.join(self.output_root, os.pardir, CUSTOM_TERRAIN_TEXTURE_SOURCE)
+        source = os.path.normpath(source)
+        converted = convert_custom_terrain_texture(
+            source,
+            os.path.join(terrain_dir, CUSTOM_TERRAIN_TEXTURE_NAME),
+            CUSTOM_TERRAIN_TEXTURE_SIZE,
+        )
+        if converted:
+            grass_key = next(
+                (k for k, v in definitions.items()
+                 if isinstance(v, dict) and v.get("internalName") == "Grass"),
+                None,
+            )
+            if grass_key is not None:
+                definitions[grass_key]["baseColorBaseTex"] = (
+                    f"/levels/{self.level_name.lower()}/art/terrains/{CUSTOM_TERRAIN_TEXTURE_NAME}"
+                )
+            self.report["customTerrainTexture"] = CUSTOM_TERRAIN_TEXTURE_NAME
+        else:
+            self.report.setdefault("warnings", []).append(
+                f"custom terrain texture not found or unreadable: {CUSTOM_TERRAIN_TEXTURE_SOURCE}"
+            )
+
         self.write_json(os.path.join(terrain_dir, "main.materials.json"), definitions)
 
         self.terrain_materials = material_names
